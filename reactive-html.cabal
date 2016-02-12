@@ -1,0 +1,26 @@
+name:                reactive-html
+version:             0.1.0.0
+synopsis:            A small API for building reactive web applications with reactive-banana & GHCJS
+homepage:            https://github.com/ocharles/reactive-html
+license:             BSD3
+license-file:        LICENSE
+author:              Ollie Charles
+maintainer:          ollie@ocharles.org.uk
+copyright:           2016 Ollie Charles
+category:            Web
+build-type:          Simple
+extra-source-files:  README.org
+cabal-version:       >=1.10
+
+library
+  exposed-modules:     Reactive.Html
+  other-extensions:    FlexibleInstances, FunctionalDependencies, GADTs, GeneralizedNewtypeDeriving, JavaScriptFFI, UndecidableInstances, OverloadedStrings, RecordWildCards, RecursiveDo
+  build-depends:       base >=4.8 && <4.9, reactive-banana, ghcjs-dom, patches-vector, vector, ghcjs-prim, ghcjs-base
+  hs-source-dirs:      src
+  default-language:    Haskell2010
+  ghc-options:         -Wall
+
+executable todo-mvc
+  build-depends: base, reactive-html, reactive-banana
+  main-is: Main.hs
+  default-language: Haskell2010

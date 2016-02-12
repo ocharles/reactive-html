@@ -5,7 +5,7 @@
 {-# LANGUAGE JavaScriptFFI #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module ReactiveHtml
+module Reactive.Html
        ( -- * Running applications
          runHtml, Html, render,
 

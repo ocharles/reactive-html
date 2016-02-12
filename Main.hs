@@ -6,7 +6,7 @@ module Main (main) where
 
 import Control.Monad.Fix (mfix)
 import Data.Monoid
-import ReactiveHtml
+import Reactive.Html
 import Reactive.Banana
 import Reactive.Banana.Frameworks (MomentIO, execute)
 
