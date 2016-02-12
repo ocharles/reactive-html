@@ -19,7 +19,8 @@ module ReactiveHtml
         form_, footer_, figure_, figcaption_, fieldset_, em_, dt_, dl_,
         dfn_, details_, del_, dd_, datalist_, colgroup_, code_, cite_,
         caption_, canvas_, body_, blockquote_, bdo_, bdi_, b_, audio_,
-        aside_, article_, address_, abbr_, a_)
+        aside_, article_, address_, abbr_, a_, on, makeElement,
+        Term(..), VoidTerm(..), Attribute(..))
        where
 
 import Control.Monad
