@@ -48,7 +48,7 @@ app =
         render $
           div_ $
           do div_ $
-               do "To do: " <> input_ newToDoText
+               do "To do: " <> input_ [value_ newToDoText]
                   button_ "Add"
              ul_ (joinHtml (fmap (mapM_ (li_ . toDoItemView)) toDoItems))
 

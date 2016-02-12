@@ -1,10 +1,13 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE JavaScriptFFI #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module ReactiveHtml
        (runReactiveHtml, li_, ul_, div_, ReactiveHtml, Html, button_,
-        joinHtml, html, render, onInput, onClick, text_, input_)
+        joinHtml, html, render, onInput, onClick, text_, input_, value_)
        where
 
 import Control.Monad
@@ -35,17 +38,22 @@ import qualified GHCJS.Prim as Prim
 import Reactive.Banana
 import Reactive.Banana.Frameworks
 
-newtype EqNode = EqNode Node
-  deriving (DOM.IsNode, DOM.IsEventTarget, DOM.IsGObject, ToJSVal, FromJSVal)
-
 foreign import javascript unsafe "$1 === $2"
   js_eqRef :: Prim.JSVal -> Prim.JSVal -> Bool
+
+--------------------------------------------------------------------------------
+-- | DOM nodes with a notion of equality (based on pointer equality of the
+-- underlying JavaScript object).
+newtype EqNode = EqNode Node
+  deriving (DOM.IsNode, DOM.IsEventTarget, DOM.IsGObject, ToJSVal, FromJSVal)
 
 instance Eq EqNode where
   EqNode l == EqNode r =
     case (pToJSVal l,pToJSVal r) of
       (a,b) -> js_eqRef a b
 
+--------------------------------------------------------------------------------
+-- | A writer monad over DOM nodes that can change over time.
 newtype ReactiveHtml a =
   ReactiveHtml (MomentIO (a,Behavior (Vector EqNode)))
 
@@ -71,6 +79,7 @@ instance Monad ReactiveHtml where
               ReactiveHtml m' -> m'
           return (b,liftA2 (<>) nodes nodes'))
 
+-- | Create a text DOM node.
 instance a ~ () => IsString (ReactiveHtml a) where
   fromString str =
     ReactiveHtml $
@@ -78,6 +87,7 @@ instance a ~ () => IsString (ReactiveHtml a) where
        Just tNode <- liftIO (createTextNode document str)
        return ((),pure (pure (EqNode (castToNode tNode))))
 
+-- | Create a text DOM node whose contents can vary.
 text_ :: Behavior String -> ReactiveHtml ()
 text_ contents =
   ReactiveHtml $
@@ -91,21 +101,400 @@ text_ contents =
      reactimate' (fmap (fmap (setData textNode . Just)) contentsChanged)
      return ((),pure (pure (EqNode (castToNode textNode))))
 
-div_, ul_, li_, button_
-  :: ReactiveHtml a -> ReactiveHtml ()
-div_ = makeElement "div"
-ul_ = makeElement "ul"
-li_ = makeElement "li"
-button_ = makeElement "button"
+--------------------------------------------------------------------------------
+newtype Attribute = Attribute (DOM.Element -> MomentIO ())
 
+applyAttributes :: DOM.Element -> [Attribute] -> MomentIO ()
+applyAttributes el = mapM_ (\(Attribute f) -> f el)
+
+value_ :: Behavior String -> Attribute
+value_ v =
+  Attribute $
+  \el ->
+    do (input,fixInput) <- newEvent
+       eventListener <-
+         liftIO (eventListenerNew (const (fixInput ()) :: UIEvent -> IO ()))
+       liftIOLater
+         (addEventListener el
+                           ("input" :: String)
+                           (Just eventListener)
+                           False)
+       initialValue <- valueB v
+       liftIO (setValue (castToHTMLInputElement el)
+                        (Just initialValue))
+       valueChanged <- changes v
+       reactimate' (fmap (fmap (setValue (castToHTMLInputElement el) . Just)) valueChanged)
+       reactimate
+         (fmap (setValue (castToHTMLInputElement el) . Just)
+               (v <@ input))
+
+--------------------------------------------------------------------------------
+class Term args r | r -> args where
+  mkTerm :: String -> args -> r
+
+instance (html ~ ReactiveHtml (), b ~ ()) => Term html (ReactiveHtml b) where
+  mkTerm el = makeElement el []
+
+instance (attributes ~ [Attribute],children ~ ReactiveHtml a,html ~ ReactiveHtml ()) => Term attributes (children -> html) where
+  mkTerm el = makeElement el
+
+a_ :: Term args html => args -> html
+a_ = mkTerm "a"
+
+abbr_ :: Term args html => args -> html
+abbr_ = mkTerm "abbr"
+
+address_ :: Term args html => args -> html
+address_ = mkTerm "address"
+
+article_ :: Term args html => args -> html
+article_ = mkTerm "article"
+
+aside_ :: Term args html => args -> html
+aside_ = mkTerm "aside"
+
+audio_ :: Term args html => args -> html
+audio_ = mkTerm "audio"
+
+b_ :: Term args html => args -> html
+b_ = mkTerm "b"
+
+bdi_ :: Term args html => args -> html
+bdi_ = mkTerm "bdi"
+
+bdo_ :: Term args html => args -> html
+bdo_ = mkTerm "bdo"
+
+blockquote_ :: Term args html => args -> html
+blockquote_ = mkTerm "blockquote"
+
+body_ :: Term args html => args -> html
+body_ = mkTerm "body"
+
+button_ :: Term args html => args -> html
+button_ = mkTerm "button"
+
+canvas_ :: Term args html => args -> html
+canvas_ = mkTerm "canvas"
+
+caption_ :: Term args html => args -> html
+caption_ = mkTerm "caption"
+
+cite_ :: Term args html => args -> html
+cite_ = mkTerm "cite"
+
+code_ :: Term args html => args -> html
+code_ = mkTerm "code"
+
+colgroup_ :: Term args html => args -> html
+colgroup_ = mkTerm "colgroup"
+
+datalist_ :: Term args html => args -> html
+datalist_ = mkTerm "datalist"
+
+dd_ :: Term args html => args -> html
+dd_ = mkTerm "dd"
+
+del_ :: Term args html => args -> html
+del_ = mkTerm "del"
+
+details_ :: Term args html => args -> html
+details_ = mkTerm "details"
+
+dfn_ :: Term args html => args -> html
+dfn_ = mkTerm "dfn"
+
+div_ :: Term args html => args -> html
+div_ = mkTerm "div"
+
+dl_ :: Term args html => args -> html
+dl_ = mkTerm "dl"
+
+dt_ :: Term args html => args -> html
+dt_ = mkTerm "dt"
+
+em_ :: Term args html => args -> html
+em_ = mkTerm "em"
+
+fieldset_ :: Term args html => args -> html
+fieldset_ = mkTerm "fieldset"
+
+figcaption_ :: Term args html => args -> html
+figcaption_ = mkTerm "figcaption"
+
+figure_ :: Term args html => args -> html
+figure_ = mkTerm "figure"
+
+footer_ :: Term args html => args -> html
+footer_ = mkTerm "footer"
+
+form_ :: Term args html => args -> html
+form_ = mkTerm "form"
+
+h1_ :: Term args html => args -> html
+h1_ = mkTerm "h1"
+
+h2_ :: Term args html => args -> html
+h2_ = mkTerm "h2"
+
+h3_ :: Term args html => args -> html
+h3_ = mkTerm "h3"
+
+h4_ :: Term args html => args -> html
+h4_ = mkTerm "h4"
+
+h5_ :: Term args html => args -> html
+h5_ = mkTerm "h5"
+
+h6_ :: Term args html => args -> html
+h6_ = mkTerm "h6"
+
+head_ :: Term args html => args -> html
+head_ = mkTerm "head"
+
+header_ :: Term args html => args -> html
+header_ = mkTerm "header"
+
+hgroup_ :: Term args html => args -> html
+hgroup_ = mkTerm "hgroup"
+
+html_ :: Term args html => args -> html
+html_ = mkTerm "html"
+
+i_ :: Term args html => args -> html
+i_ = mkTerm "i"
+
+iframe_ :: Term args html => args -> html
+iframe_ = mkTerm "iframe"
+
+ins_ :: Term args html => args -> html
+ins_ = mkTerm "ins"
+
+kbd_ :: Term args html => args -> html
+kbd_ = mkTerm "kbd"
+
+label_ :: Term args html => args -> html
+label_ = mkTerm "label"
+
+legend_ :: Term args html => args -> html
+legend_ = mkTerm "legend"
+
+li_ :: Term args html => args -> html
+li_ = mkTerm "li"
+
+map_ :: Term args html => args -> html
+map_ = mkTerm "map"
+
+mark_ :: Term args html => args -> html
+mark_ = mkTerm "mark"
+
+menu_ :: Term args html => args -> html
+menu_ = mkTerm "menu"
+
+meter_ :: Term args html => args -> html
+meter_ = mkTerm "meter"
+
+nav_ :: Term args html => args -> html
+nav_ = mkTerm "nav"
+
+noscript_ :: Term args html => args -> html
+noscript_ = mkTerm "noscript"
+
+object_ :: Term args html => args -> html
+object_ = mkTerm "object"
+
+ol_ :: Term args html => args -> html
+ol_ = mkTerm "ol"
+
+optgroup_ :: Term args html => args -> html
+optgroup_ = mkTerm "optgroup"
+
+option_ :: Term args html => args -> html
+option_ = mkTerm "option"
+
+output_ :: Term args html => args -> html
+output_ = mkTerm "output"
+
+p_ :: Term args html => args -> html
+p_ = mkTerm "p"
+
+
+pre_ :: Term args html => args -> html
+pre_ = mkTerm "pre"
+
+progress_ :: Term args html => args -> html
+progress_ = mkTerm "progress"
+
+q_ :: Term args html => args -> html
+q_ = mkTerm "q"
+
+rp_ :: Term args html => args -> html
+rp_ = mkTerm "rp"
+
+rt_ :: Term args html => args -> html
+rt_ = mkTerm "rt"
+
+ruby_ :: Term args html => args -> html
+ruby_ = mkTerm "ruby"
+
+s_ :: Term args html => args -> html
+s_ = mkTerm "s"
+
+samp_ :: Term args html => args -> html
+samp_ = mkTerm "samp"
+
+script_ :: Term args html => args -> html
+script_ = mkTerm "script"
+
+section_ :: Term args html => args -> html
+section_ = mkTerm "section"
+
+select_ :: Term args html => args -> html
+select_ = mkTerm "select"
+
+small_ :: Term args html => args -> html
+small_ = mkTerm "small"
+
+
+span_ :: Term args html => args -> html
+span_ = mkTerm "span"
+
+strong_ :: Term args html => args -> html
+strong_ = mkTerm "strong"
+
+style_ :: Term args html => args -> html
+style_ = mkTerm "style"
+
+sub_ :: Term args html => args -> html
+sub_ = mkTerm "sub"
+
+summary_ :: Term args html => args -> html
+summary_ = mkTerm "summary"
+
+sup_ :: Term args html => args -> html
+sup_ = mkTerm "sup"
+
+table_ :: Term args html => args -> html
+table_ = mkTerm "table"
+
+tbody_ :: Term args html => args -> html
+tbody_ = mkTerm "tbody"
+
+td_ :: Term args html => args -> html
+td_ = mkTerm "td"
+
+textarea_ :: Term args html => args -> html
+textarea_ = mkTerm "textarea"
+
+tfoot_ :: Term args html => args -> html
+tfoot_ = mkTerm "tfoot"
+
+th_ :: Term args html => args -> html
+th_ = mkTerm "th"
+
+thead_ :: Term args html => args -> html
+thead_ = mkTerm "thead"
+
+time_ :: Term args html => args -> html
+time_ = mkTerm "time"
+
+title_ :: Term args html => args -> html
+title_ = mkTerm "title"
+
+tr_ :: Term args html => args -> html
+tr_ = mkTerm "tr"
+
+u_ :: Term args html => args -> html
+u_ = mkTerm "u"
+
+ul_ :: Term args html => args -> html
+ul_ = mkTerm "ul"
+
+var_ :: Term args html => args -> html
+var_ = mkTerm "var"
+
+video_ :: Term args html => args -> html
+video_ = mkTerm "video"
+
+--------------------------------------------------------------------------------
+class VoidTerm r where
+  mkVoidTerm :: String -> r
+
+instance b ~ () => VoidTerm (ReactiveHtml b) where
+  mkVoidTerm el = makeVoidElement el []
+
+instance (attributes ~ [Attribute], html ~ ReactiveHtml ()) => VoidTerm (attributes -> html) where
+  mkVoidTerm el = makeVoidElement el
+
+makeVoidElement
+  :: String -> [Attribute] -> ReactiveHtml ()
+makeVoidElement el attrs =
+  ReactiveHtml $
+  do Just divElement <-
+       liftIO (do Just document <- currentDocument
+                  createElement document
+                                (Just el :: Maybe String)) 
+     applyAttributes divElement attrs
+     return ((),pure (pure (EqNode (castToNode divElement))))
+
+area_ :: VoidTerm html => html
+area_ = mkVoidTerm "area"
+
+base_ :: VoidTerm html => html
+base_ = mkVoidTerm "base"
+
+br_ :: VoidTerm html => html
+br_ = mkVoidTerm "br"
+
+col_ :: VoidTerm html => html
+col_ = mkVoidTerm "col"
+
+command_ :: VoidTerm html => html
+command_ = mkVoidTerm "command"
+
+embed_ :: VoidTerm html => html
+embed_ = mkVoidTerm "embed"
+
+hr_ :: VoidTerm html => html
+hr_ = mkVoidTerm "hr"
+
+img_ :: VoidTerm html => html
+img_ = mkVoidTerm "img"
+
+input_ :: VoidTerm html => html
+input_ = mkVoidTerm "input"
+
+keygen_ :: VoidTerm html => html
+keygen_ = mkVoidTerm "keygen"
+
+link_ :: VoidTerm html => html
+link_ = mkVoidTerm "link"
+
+meta_ :: VoidTerm html => html
+meta_ = mkVoidTerm "meta"
+
+param_ :: VoidTerm html => html
+param_ = mkVoidTerm "param"
+
+source_ :: VoidTerm html => html
+source_ = mkVoidTerm "source"
+
+track_ :: VoidTerm html => html
+track_ = mkVoidTerm "track"
+
+wbr_ :: VoidTerm html => html
+wbr_ = mkVoidTerm "wbr"
+
+--------------------------------------------------------------------------------
 makeElement
-  :: String -> ReactiveHtml a -> ReactiveHtml ()
-makeElement el (ReactiveHtml mkChildren) =
+  :: String -> [Attribute] -> ReactiveHtml a -> ReactiveHtml ()
+makeElement el attrs (ReactiveHtml mkChildren) =
   ReactiveHtml $
   do Just divElement <-
        liftIO (do Just document <- currentDocument
                   createElement document
                                 (Just el :: Maybe String))
+     applyAttributes divElement attrs
      (_,children) <- mkChildren
      initialChildren <- valueB children
      liftIO (traverse_ (void . appendChild divElement . Just . id) initialChildren)
@@ -130,31 +519,6 @@ makeElement el (ReactiveHtml mkChildren) =
                                               (Just (id node))))) <$>
         children <@> childrenChanged)
      return ((),pure (pure (EqNode (castToNode divElement))))
-
-input_ :: Behavior String -> ReactiveHtml ()
-input_ value =
-  ReactiveHtml $
-  do Just document <- liftIO currentDocument
-     Just el <-
-       liftIO (createElement document
-                             (Just "input" :: Maybe String))
-     (input,fixInput) <- newEvent
-     eventListener <-
-       liftIO (eventListenerNew (const (fixInput ()) :: UIEvent -> IO ()))
-     liftIOLater
-       (addEventListener el
-                         ("input" :: String)
-                         (Just eventListener)
-                         False)
-     initialValue <- valueB value
-     liftIO (setValue (castToHTMLInputElement el)
-                      (Just initialValue))
-     valueChanged <- changes value
-     reactimate' (fmap (fmap (setValue (castToHTMLInputElement el) . Just)) valueChanged)
-     reactimate
-       (fmap (setValue (castToHTMLInputElement el) . Just)
-             (value <@ input))
-     return ((),pure (pure (EqNode (castToNode el))))
 
 newtype Html =
   Html (Behavior (Vector EqNode))
