@@ -1,0 +1,27 @@
+#+TITLE: reactive-html
+
+Welcome to =reactive-html=, a small library for building reactive web
+applications with GHCJS and =reactive-banana=. This project is currently a work
+in progress, but if you want to play along at home - feel free! The easiest path
+is to make sure you have [[https://nixos.org/nix][Nix]] installed, and then you can do:
+
+#+begin_src bash
+nix-shell --option binary-caches https://ryantrinkle.com:5443 --run 'ghcjs Main.hs'
+chromium Main.jsexe/index.html
+#+end_src
+
+If Nix complains about an untrusted binary cache, you will need to make sure
+that Ryan's cache is marked as trusted. If you run NixOS, add this to your
+=configuration.nix=:
+
+#+BEGIN_SRC nix
+nix.trustedBinaryCaches = [https://ryantrinkle.com:5443];
+#+END_SRC
+
+If you are just running Nix, I believe you'll need to add this to your
+=/etc/nix/nix.conf= file (sorry OS X users, I don't know where this file is for
+you!):
+
+#+BEGIN_SRC nix
+trusted-binary-caches = https://ryantrinkle.com:5443
+#+END_SRC
