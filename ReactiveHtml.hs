@@ -6,21 +6,34 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module ReactiveHtml
-       (runReactiveHtml, li_, ul_, div_, ReactiveHtml, Html, button_,
-        joinHtml, html, render, onInput, onClick, text_, input_, value_,
-        wbr_, track_, source_, param_, meta_, link_, keygen_, img_, hr_,
-        embed_, command_, col_, br_, base_, area_, video_, var_, u_, tr_,
-        title_, time_, thead_, th_, tfoot_, textarea_, td_, tbody_, table_,
-        sup_, summary_, sub_, style_, strong_, span_, small_, select_,
-        section_, script_, samp_, s_, ruby_, rt_, rp_, q_, progress_, pre_,
-        p_, output_, option_, optgroup_, ol_, object_, noscript_, nav_,
-        meter_, menu_, mark_, map_, legend_, label_, kbd_, ins_, iframe_,
-        i_, html_, hgroup_, header_, head_, h6_, h5_, h4_, h3_, h2_, h1_,
-        form_, footer_, figure_, figcaption_, fieldset_, em_, dt_, dl_,
-        dfn_, details_, del_, dd_, datalist_, colgroup_, code_, cite_,
-        caption_, canvas_, body_, blockquote_, bdo_, bdi_, b_, audio_,
-        aside_, article_, address_, abbr_, a_, on, makeElement,
-        Term(..), VoidTerm(..), Attribute(..))
+       ( -- * Running applications
+         runHtml, Html, render,
+
+         -- * Building reactive HTML
+         ReactiveHtml, text_, joinHtml, html,
+
+         -- ** Handling Events
+         on, onClick, onInput,
+
+         -- ** HTML 5 Elements
+         a_, abbr_, address_, area_, article_, aside_, audio_, b_, base_, bdi_,
+         bdo_, blockquote_, body_, br_, button_, canvas_, caption_, cite_, code_,
+         col_, colgroup_, command_, datalist_, dd_, del_, details_, dfn_, div_,
+         dl_, dt_, em_, embed_, fieldset_, figcaption_, figure_, footer_, form_,
+         h1_, h2_, h3_, h4_, h5_, h6_, head_, header_, hgroup_, hr_, html_, i_,
+         iframe_, img_, input_, ins_, kbd_, keygen_, label_, legend_, li_, link_,
+         map_, mark_, menu_, meta_, meter_, nav_, noscript_, object_, ol_,
+         optgroup_, option_, output_, p_, param_, pre_, progress_, q_, rp_, rt_,
+         ruby_, s_, samp_, script_, section_, select_, small_, source_, span_,
+         strong_, style_, sub_, summary_, sup_, table_, tbody_, td_, textarea_,
+         tfoot_, th_, thead_, time_, title_, tr_, track_, u_, ul_, var_, video_,
+         wbr_,
+
+         -- ** HTML 5 Attributes
+         value_,
+
+         -- ** DOM API
+         makeElement, Term(..), VoidTerm(..), Attribute(..))
        where
 
 import Control.Monad
@@ -104,14 +117,13 @@ instance a ~ () => IsString (ReactiveHtml a) where
 text_ :: Behavior String -> ReactiveHtml ()
 text_ contents =
   ReactiveHtml $
-  do initialText <- valueBLater contents
-     Just textNode <-
+  do Just textNode <-
        liftIO (do Just document <- currentDocument
-                  createTextNode document
-                                 (mempty `asTypeOf` initialText))
-     liftIOLater (setData textNode (Just initialText))
-     contentsChanged <- changes contents
-     reactimate' (fmap (fmap (setData textNode . Just)) contentsChanged)
+                  createTextNode document "")
+     do initialText <- valueBLater contents
+        liftIOLater (setData textNode (Just initialText))
+     do contentsChanged <- changes contents
+        reactimate' (fmap (fmap (setData textNode . Just)) contentsChanged)
      return ((),pure (pure (EqNode (castToNode textNode))))
 
 --------------------------------------------------------------------------------
@@ -125,13 +137,13 @@ value_ v =
   Attribute $
   \el ->
     do (input,fixInput) <- newEvent
-       eventListener <-
-         liftIO (eventListenerNew (const (fixInput ()) :: UIEvent -> IO ()))
        liftIOLater
-         (addEventListener el
-                           ("input" :: String)
-                           (Just eventListener)
-                           False)
+         (do eventListener <-
+               eventListenerNew (const (fixInput ()) :: UIEvent -> IO ())
+             addEventListener el
+                              "input"
+                              (Just eventListener)
+                              False)
        initialValue <- valueB v
        liftIO (setValue (castToHTMLInputElement el)
                         (Just initialValue))
@@ -536,6 +548,7 @@ makeElement el attrs (ReactiveHtml mkChildren) =
 --------------------------------------------------------------------------------
 -- TODO Would much rather have DOM.Event here, but for some reason I am unable
 -- to later cast that back to UIEvent.
+-- TODO Do we need to call eventListenerRelease here?
 on :: String -> Html -> String -> MomentIO (Event DOM.UIEvent)
 on eventName ~(Html nodes) selector =
   do (evOccured,fireEvent) <- newEvent
@@ -596,8 +609,8 @@ html :: Html -> ReactiveHtml ()
 html (Html b) = ReactiveHtml (return ((),b))
 
 --------------------------------------------------------------------------------
-runReactiveHtml :: MomentIO Html -> IO ()
-runReactiveHtml app =
+runHtml :: MomentIO Html -> IO ()
+runHtml app =
   do Just document <- currentDocument
      Just body <- getBody document
      n <-

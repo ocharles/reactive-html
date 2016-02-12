@@ -61,4 +61,4 @@ deleteAt j (x:xs)
   | otherwise = x : deleteAt (j - 1) xs
 
 main :: IO ()
-main = runReactiveHtml app
+main = runHtml app
