@@ -7,7 +7,19 @@
 
 module ReactiveHtml
        (runReactiveHtml, li_, ul_, div_, ReactiveHtml, Html, button_,
-        joinHtml, html, render, onInput, onClick, text_, input_, value_)
+        joinHtml, html, render, onInput, onClick, text_, input_, value_,
+        wbr_, track_, source_, param_, meta_, link_, keygen_, img_, hr_,
+        embed_, command_, col_, br_, base_, area_, video_, var_, u_, tr_,
+        title_, time_, thead_, th_, tfoot_, textarea_, td_, tbody_, table_,
+        sup_, summary_, sub_, style_, strong_, span_, small_, select_,
+        section_, script_, samp_, s_, ruby_, rt_, rp_, q_, progress_, pre_,
+        p_, output_, option_, optgroup_, ol_, object_, noscript_, nav_,
+        meter_, menu_, mark_, map_, legend_, label_, kbd_, ins_, iframe_,
+        i_, html_, hgroup_, header_, head_, h6_, h5_, h4_, h3_, h2_, h1_,
+        form_, footer_, figure_, figcaption_, fieldset_, em_, dt_, dl_,
+        dfn_, details_, del_, dd_, datalist_, colgroup_, code_, cite_,
+        caption_, canvas_, body_, blockquote_, bdo_, bdi_, b_, audio_,
+        aside_, article_, address_, abbr_, a_)
        where
 
 import Control.Monad
@@ -433,7 +445,7 @@ makeVoidElement el attrs =
   do Just divElement <-
        liftIO (do Just document <- currentDocument
                   createElement document
-                                (Just el :: Maybe String)) 
+                                (Just el :: Maybe String))
      applyAttributes divElement attrs
      return ((),pure (pure (EqNode (castToNode divElement))))
 
@@ -520,25 +532,13 @@ makeElement el attrs (ReactiveHtml mkChildren) =
         children <@> childrenChanged)
      return ((),pure (pure (EqNode (castToNode divElement))))
 
-newtype Html =
-  Html (Behavior (Vector EqNode))
-
-instance Monoid Html where
-  mempty = Html (pure mempty)
-  Html l `mappend` Html r = Html (liftA2 mappend l r) 
-
-render :: ReactiveHtml a -> MomentIO Html
-render (ReactiveHtml mk) = fmap (Html . snd) mk
-
-onInput
-  :: Html -> String -> MomentIO (Event String)
-onInput ~(Html nodes) selector =
-  do (input,fireInput) <- newEvent
-     eventListener <-
-       liftIO (eventListenerNew
-                 ((\ev ->
-                     do Just target <- getTarget ev
-                        getValue (castToHTMLInputElement target) >>= fireInput) :: UIEvent -> IO ()))
+--------------------------------------------------------------------------------
+-- TODO Would much rather have DOM.Event here, but for some reason I am unable
+-- to later cast that back to UIEvent.
+on :: String -> Html -> String -> MomentIO (Event DOM.UIEvent)
+on eventName ~(Html nodes) selector =
+  do (evOccured,fireEvent) <- newEvent
+     eventListener <- liftIO (eventListenerNew fireEvent)
      do initialNodes <- valueBLater nodes
         liftIOLater
           (do for_ initialNodes
@@ -546,37 +546,39 @@ onInput ~(Html nodes) selector =
                       do Just nodeList <-
                            querySelectorAll (castToElement (id node))
                                             selector
-                         mnode <- item nodeList 0 -- TODO
+                         mnode <- item nodeList 0 -- TODO Consider all results
                          case mnode of
                            Nothing -> putStrLn "Selector found no elements"
                            Just target ->
                              addEventListener (castToElement target)
-                                              ("input" :: String)
+                                              eventName
                                               (Just eventListener)
                                               False))
-     return (fmap (fromMaybe "") input)
+     return evOccured
+
+onInput
+  :: Html -> String -> MomentIO (Event String)
+onInput view selector =
+  do input <- on "input" view selector
+     execute (fmap (\ev ->
+                      liftIO (do Just target <- getTarget ev
+                                 fmap (fromMaybe "")
+                                      (getValue (castToHTMLInputElement target))))
+                   input)
 
 onClick :: Html -> String -> MomentIO (Event ())
-onClick ~(Html nodes) selector =
-  do (click,fireClick) <- newEvent
-     eventListener <-
-       liftIO (eventListenerNew ((\_ -> fireClick ()) :: UIEvent -> IO ()))
-     do initialNodes <- valueBLater nodes
-        liftIOLater
-          (do for_ initialNodes
-                   (\node ->
-                      do Just nodeList <-
-                           querySelectorAll (castToElement (id node))
-                                            (":scope " <> selector)
-                         mnode <- item nodeList 0 -- TODO
-                         case mnode of
-                           Nothing -> putStrLn "Selector found no elements"
-                           Just target ->
-                             addEventListener (castToElement target)
-                                              ("click" :: String)
-                                              (Just eventListener)
-                                              False))
-     return click
+onClick view selector = fmap void (on "click" view selector)
+
+--------------------------------------------------------------------------------
+newtype Html =
+  Html (Behavior (Vector EqNode))
+
+instance Monoid Html where
+  mempty = Html (pure mempty)
+  Html l `mappend` Html r = Html (liftA2 mappend l r)
+
+render :: ReactiveHtml a -> MomentIO Html
+render (ReactiveHtml mk) = fmap (Html . snd) mk
 
 joinHtml :: Behavior (ReactiveHtml a) -> ReactiveHtml ()
 joinHtml bhtml =
@@ -592,6 +594,7 @@ joinHtml bhtml =
 html :: Html -> ReactiveHtml ()
 html (Html b) = ReactiveHtml (return ((),b))
 
+--------------------------------------------------------------------------------
 runReactiveHtml :: MomentIO Html -> IO ()
 runReactiveHtml app =
   do Just document <- currentDocument
