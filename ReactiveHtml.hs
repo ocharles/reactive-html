@@ -1,3 +1,5 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE JavaScriptFFI #-}
 {-# LANGUAGE GADTs #-}
 
 module ReactiveHtml
@@ -7,12 +9,10 @@ module ReactiveHtml
 
 import Control.Monad
 import Data.Foldable (traverse_,for_)
-import Data.Function (on)
 import Data.Maybe
 import Data.Monoid
 import qualified Data.Patch as Patch
 import Data.String (IsString(..))
-import Data.Unique (Unique, newUnique)
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import GHCJS.DOM (currentDocument)
@@ -27,20 +27,24 @@ import GHCJS.DOM.Node
        (Node, appendChild, castToNode, insertBefore, replaceChild,
         removeChild)
 import GHCJS.DOM.NodeList (item)
+import qualified GHCJS.DOM.Types as DOM
 import GHCJS.DOM.UIEvent
+import GHCJS.Marshal (ToJSVal, FromJSVal)
+import GHCJS.Marshal.Pure (pToJSVal)
+import qualified GHCJS.Prim as Prim
 import Reactive.Banana
 import Reactive.Banana.Frameworks
 
-data EqNode =
-  EqNode {unmark :: Node
-         ,nodeKey :: Unique}
+newtype EqNode = EqNode Node
+  deriving (DOM.IsNode, DOM.IsEventTarget, DOM.IsGObject, ToJSVal, FromJSVal)
 
-mark :: MonadIO m
-     => Node -> m EqNode
-mark n = EqNode n <$> liftIO newUnique
+foreign import javascript unsafe "$1 === $2"
+  js_eqRef :: Prim.JSVal -> Prim.JSVal -> Bool
 
 instance Eq EqNode where
-  (==) = (==) `on` nodeKey
+  EqNode l == EqNode r =
+    case (pToJSVal l,pToJSVal r) of
+      (a,b) -> js_eqRef a b
 
 newtype ReactiveHtml a =
   ReactiveHtml (MomentIO (a,Behavior (Vector EqNode)))
@@ -72,8 +76,7 @@ instance a ~ () => IsString (ReactiveHtml a) where
     ReactiveHtml $
     do Just document <- liftIO currentDocument
        Just tNode <- liftIO (createTextNode document str)
-       eqNode <- mark (castToNode tNode)
-       return ((),pure (pure eqNode))
+       return ((),pure (pure (EqNode (castToNode tNode))))
 
 text_ :: Behavior String -> ReactiveHtml ()
 text_ contents =
@@ -86,8 +89,7 @@ text_ contents =
      liftIOLater (setData textNode (Just initialText))
      contentsChanged <- changes contents
      reactimate' (fmap (fmap (setData textNode . Just)) contentsChanged)
-     eqNode <- mark (castToNode textNode)
-     return ((),pure (pure eqNode))
+     return ((),pure (pure (EqNode (castToNode textNode))))
 
 div_, ul_, li_, button_
   :: ReactiveHtml a -> ReactiveHtml ()
@@ -106,7 +108,7 @@ makeElement el (ReactiveHtml mkChildren) =
                                 (Just el :: Maybe String))
      (_,children) <- mkChildren
      initialChildren <- valueB children
-     liftIO (traverse_ (void . appendChild divElement . Just . unmark) initialChildren)
+     liftIO (traverse_ (void . appendChild divElement . Just . id) initialChildren)
      childrenChanged <- changes children
      reactimate'
        ((\old getNew ->
@@ -117,18 +119,17 @@ makeElement el (ReactiveHtml mkChildren) =
                               case edit of
                                 Patch.Insert n node ->
                                   insertBefore divElement
-                                               (Just (unmark node))
-                                               (fmap unmark (old V.!? n))
+                                               (Just (id node))
+                                               (fmap id (old V.!? n))
                                 Patch.Replace _ oldNode newNode ->
                                   replaceChild divElement
-                                               (Just (unmark newNode))
-                                               (Just (unmark oldNode))
+                                               (Just (id newNode))
+                                               (Just (id oldNode))
                                 Patch.Delete _ node ->
                                   removeChild divElement
-                                              (Just (unmark node))))) <$>
+                                              (Just (id node))))) <$>
         children <@> childrenChanged)
-     eqNode <- mark (castToNode divElement)
-     return ((),pure (pure eqNode))
+     return ((),pure (pure (EqNode (castToNode divElement))))
 
 input_ :: Behavior String -> ReactiveHtml ()
 input_ value =
@@ -153,8 +154,7 @@ input_ value =
      reactimate
        (fmap (setValue (castToHTMLInputElement el) . Just)
              (value <@ input))
-     eqNode <- mark (castToNode el)
-     return ((),pure (pure eqNode))
+     return ((),pure (pure (EqNode (castToNode el))))
 
 newtype Html =
   Html (Behavior (Vector EqNode))
@@ -180,7 +180,7 @@ onInput ~(Html nodes) selector =
           (do for_ initialNodes
                    (\node ->
                       do Just nodeList <-
-                           querySelectorAll (castToElement (unmark node))
+                           querySelectorAll (castToElement (id node))
                                             selector
                          mnode <- item nodeList 0 -- TODO
                          case mnode of
@@ -202,7 +202,7 @@ onClick ~(Html nodes) selector =
           (do for_ initialNodes
                    (\node ->
                       do Just nodeList <-
-                           querySelectorAll (castToElement (unmark node))
+                           querySelectorAll (castToElement (id node))
                                             (":scope " <> selector)
                          mnode <- item nodeList 0 -- TODO
                          case mnode of
@@ -236,5 +236,5 @@ runReactiveHtml app =
        compile (do Html nodes <- app
                    initialNodes <- valueB nodes
                    nodesChanged <- changes nodes
-                   liftIO (traverse_ (appendChild body . Just . unmark) initialNodes))
+                   liftIO (traverse_ (appendChild body . Just . id) initialNodes))
      actuate n
