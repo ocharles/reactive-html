@@ -30,7 +30,7 @@ module Reactive.Html
          wbr_,
 
          -- ** HTML 5 Attributes
-         value_,
+         id_, value_,
 
          -- ** DOM API
          makeElement, Term(..), VoidTerm(..), Attribute(..))
@@ -47,7 +47,7 @@ import qualified Data.Vector as V
 import GHCJS.DOM (currentDocument)
 import GHCJS.DOM.CharacterData (setData)
 import GHCJS.DOM.Document (createElement, createTextNode, getBody)
-import GHCJS.DOM.Element (castToElement, querySelectorAll)
+import GHCJS.DOM.Element (castToElement, querySelectorAll, setAttribute)
 import GHCJS.DOM.Event (getTarget)
 import GHCJS.DOM.EventTarget
 import GHCJS.DOM.EventTargetClosures
@@ -131,6 +131,15 @@ newtype Attribute = Attribute (DOM.Element -> MomentIO ())
 
 applyAttributes :: DOM.Element -> [Attribute] -> MomentIO ()
 applyAttributes el = mapM_ (\(Attribute f) -> f el)
+
+id_ :: Behavior String -> Attribute
+id_ v =
+  Attribute $
+  \el ->
+    do let update = setAttribute el "id"
+       valueBLater v >>= liftIOLater . update
+       valueChanged <- changes v
+       reactimate' (fmap (fmap update) valueChanged)
 
 value_ :: Behavior String -> Attribute
 value_ v =
