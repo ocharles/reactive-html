@@ -1,3 +1,6 @@
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
@@ -7,7 +10,7 @@
 
 module Reactive.Html
        ( -- * Running applications
-         runHtml, Html, render,
+         runHtml, Reactive, ReactiveNodes, render,
 
          -- * Building reactive HTML
          ReactiveHtml, text_, joinHtml, html,
@@ -37,9 +40,12 @@ module Reactive.Html
        where
 
 import Control.Monad
+import Control.Monad.Fix
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Writer.Strict (WriterT, execWriterT) -- TODO Use strict state
+import Control.Monad.Writer (tell)
 import Data.Foldable (traverse_,for_)
 import Data.Maybe
-import Data.Monoid
 import qualified Data.Patch as Patch
 import Data.String (IsString(..))
 import Data.Vector (Vector)
@@ -61,11 +67,25 @@ import GHCJS.DOM.UIEvent
 import GHCJS.Marshal (ToJSVal, FromJSVal)
 import GHCJS.Marshal.Pure (pToJSVal)
 import qualified GHCJS.Prim as Prim
+import JavaScript.Web.AnimationFrame
 import Reactive.Banana
 import Reactive.Banana.Frameworks
 
 foreign import javascript unsafe "$1 === $2"
   js_eqRef :: Prim.JSVal -> Prim.JSVal -> Bool
+
+--------------------------------------------------------------------------------
+data ReactiveNodes =
+  ReactiveNodes {rnNodes :: Behavior (Vector EqNode)
+                ,rnStale :: Event ()}
+
+instance Monoid ReactiveNodes where
+  mempty =
+    ReactiveNodes (pure mempty)
+                  never
+  ReactiveNodes a x `mappend` ReactiveNodes b y =
+    ReactiveNodes (liftA2 mappend a b)
+                  (unionWith const x y)
 
 --------------------------------------------------------------------------------
 -- | DOM nodes with a notion of equality (based on pointer equality of the
@@ -81,67 +101,65 @@ instance Eq EqNode where
 --------------------------------------------------------------------------------
 -- | A writer monad over DOM nodes that can change over time.
 newtype ReactiveHtml a =
-  ReactiveHtml (MomentIO (a,Behavior (Vector EqNode)))
+  ReactiveHtml (WriterT ReactiveNodes MomentIO a)
+  deriving (Functor, Applicative, Monad, MonadFix)
+
+liftMomentIO :: MomentIO a -> ReactiveHtml a
+liftMomentIO = ReactiveHtml . lift
 
 instance Monoid a => Monoid (ReactiveHtml a) where
-  mempty = ReactiveHtml (return (mempty,pure mempty))
-  mappend (ReactiveHtml a) (ReactiveHtml b) =
-    ReactiveHtml (liftA2 (\(u,x) (v,y) -> (u <> v,liftA2 mappend x y)) a b)
-
-instance Functor ReactiveHtml where
-  fmap = liftM
-
-instance Applicative ReactiveHtml where
-  pure = return
-  (<*>) = ap
-
-instance Monad ReactiveHtml where
-  return a = ReactiveHtml (return (a,pure mempty))
-  ReactiveHtml m >>= f =
-    ReactiveHtml
-      (do (a,nodes) <- m
-          (b,nodes') <-
-            case f a of
-              ReactiveHtml m' -> m'
-          return (b,liftA2 (<>) nodes nodes'))
+  mempty = return mempty
+  mappend = liftA2 mappend
 
 -- | Create a text DOM node.
 instance a ~ () => IsString (ReactiveHtml a) where
   fromString str =
     ReactiveHtml $
     do Just document <- liftIO currentDocument
-       Just tNode <- liftIO (createTextNode document str)
-       return ((),pure (pure (EqNode (castToNode tNode))))
+       Just tNode <-
+         liftIO (createTextNode document str)
+       tell (ReactiveNodes (pure (pure (EqNode (castToNode tNode)))) never) -- TODO Fire once?
 
 -- | Create a text DOM node whose contents can vary.
-text_ :: Behavior String -> ReactiveHtml ()
-text_ contents =
-  ReactiveHtml $
-  do Just textNode <-
-       liftIO (do Just document <- currentDocument
-                  createTextNode document "")
-     do initialText <- valueBLater contents
-        liftIOLater (setData textNode (Just initialText))
-     do contentsChanged <- changes contents
-        reactimate' (fmap (fmap (setData textNode . Just)) contentsChanged)
-     return ((),pure (pure (EqNode (castToNode textNode))))
+text_ :: (?animationFrame :: Event ()) => Behavior String -> ReactiveHtml ()
+text_ text =
+  do liftMomentIO
+       (do textNode <- liftIO newEmptyTextNode
+           currentValue <-
+             stepper "" (text <@ ?animationFrame)
+           reactimate
+             (fmap (setText textNode)
+                   (filterApply ((/=) <$> currentValue)
+                                (text <@ ?animationFrame)))
+           requestAnimationFrame <- void <$> changes text
+           return (ReactiveNodes (pure (pure (EqNode (castToNode textNode))))
+                                 requestAnimationFrame)) >>=
+       ReactiveHtml . tell
+  where newEmptyTextNode =
+          do Just document <- currentDocument
+             Just node <-
+               createTextNode document ""
+             return node
+        setText node t = setData node (Just t)
 
 --------------------------------------------------------------------------------
-newtype Attribute = Attribute (DOM.Element -> MomentIO ())
+newtype Attribute = Attribute (DOM.Element -> MomentIO (Event ()))
 
-applyAttributes :: DOM.Element -> [Attribute] -> MomentIO ()
-applyAttributes el = mapM_ (\(Attribute f) -> f el)
+applyAttributes :: DOM.Element -> [Attribute] -> MomentIO (Event ())
+applyAttributes el =
+  fmap (foldl (unionWith const) never) . mapM (\(Attribute f) -> f el)
 
-id_ :: Behavior String -> Attribute
+id_ :: Reactive => Behavior String -> Attribute
 id_ v =
   Attribute $
   \el ->
-    do let update = setAttribute el "id"
-       valueBLater v >>= liftIOLater . update
+    do let update x =
+             setAttribute el "id" x
        valueChanged <- changes v
-       reactimate' (fmap (fmap update) valueChanged)
+       reactimate (fmap update (v <@ ?animationFrame))
+       return (void valueChanged)
 
-value_ :: Behavior String -> Attribute
+value_ :: Reactive => Behavior String -> Attribute
 value_ v =
   Attribute $
   \el ->
@@ -153,24 +171,22 @@ value_ v =
                               "input"
                               (Just eventListener)
                               False)
-       initialValue <- valueB v
-       liftIO (setValue (castToHTMLInputElement el)
-                        (Just initialValue))
-       valueChanged <- changes v
-       reactimate' (fmap (fmap (setValue (castToHTMLInputElement el) . Just)) valueChanged)
        reactimate
          (fmap (setValue (castToHTMLInputElement el) . Just)
-               (v <@ input))
+               (v <@ ?animationFrame))
+       return (void input)
 
 --------------------------------------------------------------------------------
-class Term args r | r -> args where
-  mkTerm :: String -> args -> r
+class Term_ args r | r -> args where
+  mkTerm :: (?animationFrame :: Event ()) => String -> args -> r
 
-instance (html ~ ReactiveHtml (), b ~ ()) => Term html (ReactiveHtml b) where
+instance (html ~ ReactiveHtml (), b ~ ()) => Term_ html (ReactiveHtml b) where
   mkTerm el = makeElement el []
 
-instance (attributes ~ [Attribute],children ~ ReactiveHtml a,html ~ ReactiveHtml ()) => Term attributes (children -> html) where
+instance (attributes ~ [Attribute],children ~ ReactiveHtml a,html ~ ReactiveHtml ()) => Term_ attributes (children -> html) where
   mkTerm el = makeElement el
+
+type Term args html = (Term_ args html, ?animationFrame :: Event ())
 
 a_ :: Term args html => args -> html
 a_ = mkTerm "a"
@@ -352,7 +368,6 @@ output_ = mkTerm "output"
 p_ :: Term args html => args -> html
 p_ = mkTerm "p"
 
-
 pre_ :: Term args html => args -> html
 pre_ = mkTerm "pre"
 
@@ -388,7 +403,6 @@ select_ = mkTerm "select"
 
 small_ :: Term args html => args -> html
 small_ = mkTerm "small"
-
 
 span_ :: Term args html => args -> html
 span_ = mkTerm "span"
@@ -468,8 +482,10 @@ makeVoidElement el attrs =
        liftIO (do Just document <- currentDocument
                   createElement document
                                 (Just el :: Maybe String))
-     applyAttributes divElement attrs
-     return ((),pure (pure (EqNode (castToNode divElement))))
+     attributesChanged <-
+       lift (applyAttributes divElement attrs)
+     tell (ReactiveNodes (pure (pure (EqNode (castToNode divElement))))
+                         attributesChanged)
 
 area_ :: VoidTerm html => html
 area_ = mkVoidTerm "area"
@@ -521,66 +537,81 @@ wbr_ = mkVoidTerm "wbr"
 
 --------------------------------------------------------------------------------
 makeElement
-  :: String -> [Attribute] -> ReactiveHtml a -> ReactiveHtml ()
+  :: (?animationFrame :: Event ()) => String -> [Attribute] -> ReactiveHtml a -> ReactiveHtml ()
 makeElement el attrs (ReactiveHtml mkChildren) =
-  ReactiveHtml $
-  do Just divElement <-
-       liftIO (do Just document <- currentDocument
-                  createElement document
-                                (Just el :: Maybe String))
-     applyAttributes divElement attrs
-     (_,children) <- mkChildren
-     initialChildren <- valueB children
-     liftIO (traverse_ (void . appendChild divElement . Just . id) initialChildren)
-     childrenChanged <- changes children
-     reactimate'
-       ((\old getNew ->
-           do new <- getNew
-              let edits = Patch.toList (Patch.diff old new)
-              return (for_ edits
-                           (\edit ->
-                              case edit of
-                                Patch.Insert n node ->
-                                  insertBefore divElement
-                                               (Just (id node))
-                                               (fmap id (old V.!? n))
-                                Patch.Replace _ oldNode newNode ->
-                                  replaceChild divElement
-                                               (Just (id newNode))
-                                               (Just (id oldNode))
-                                Patch.Delete _ node ->
-                                  removeChild divElement
-                                              (Just (id node))))) <$>
-        children <@> childrenChanged)
-     return ((),pure (pure (EqNode (castToNode divElement))))
+  liftMomentIO
+    (do ReactiveNodes children childrenRaf <- execWriterT mkChildren
+        element <- liftIO newDivElement
+        attributesChanged <-
+          applyAttributes element attrs
+        currentChildren <-
+          stepper mempty (children <@ ?animationFrame)
+        reactimate
+          (fmap (setChildren element) currentChildren <@>
+           (filterApply ((/=) <$> currentChildren)
+                        (children <@ ?animationFrame)))
+        requestAnimationFrame <- void <$> changes children
+        return (ReactiveNodes
+                  (pure (pure (EqNode (castToNode element))))
+                  (foldl (unionWith const)
+                         never
+                         [requestAnimationFrame,childrenRaf,attributesChanged]))) >>=
+  ReactiveHtml . tell
+  where newDivElement =
+          do Just document <- currentDocument
+             Just node <-
+               createElement document
+                             (Just el)
+             return node
+        setChildren element old new =
+          let edits =
+                Patch.toList (Patch.diff old new)
+          in for_ edits
+                  (\edit ->
+                     case edit of
+                       Patch.Insert n node ->
+                         insertBefore element
+                                      (Just node)
+                                      (old V.!? n)
+                       Patch.Replace _ oldNode newNode ->
+                         replaceChild element
+                                      (Just newNode)
+                                      (Just oldNode)
+                       Patch.Delete _ node ->
+                         removeChild element
+                                     (Just node))
 
 --------------------------------------------------------------------------------
 -- TODO Would much rather have DOM.Event here, but for some reason I am unable
 -- to later cast that back to UIEvent.
 -- TODO Do we need to call eventListenerRelease here?
-on :: String -> Html -> String -> MomentIO (Event DOM.UIEvent)
-on eventName ~(Html nodes) selector =
-  do (evOccured,fireEvent) <- newEvent
-     eventListener <- liftIO (eventListenerNew fireEvent)
-     do initialNodes <- valueBLater nodes
-        liftIOLater
-          (do for_ initialNodes
-                   (\node ->
-                      do Just nodeList <-
-                           querySelectorAll (castToElement (id node))
-                                            selector
-                         mnode <- item nodeList 0 -- TODO Consider all results
-                         case mnode of
-                           Nothing -> putStrLn "Selector found no elements"
-                           Just target ->
-                             addEventListener (castToElement target)
-                                              eventName
-                                              (Just eventListener)
-                                              False))
-     return evOccured
 
+on :: Reactive => String -> ReactiveNodes -> String -> MomentIO (Event DOM.UIEvent)
+on eventName ~(ReactiveNodes nodes _) selector =
+  do (evOccured,fireEvent) <- newEvent
+     eventListener <-
+       liftIO (eventListenerNew fireEvent)
+     reactimate
+       (fmap (rebind eventListener)
+             (nodes <@ ?rebindEventHandlers))
+     return evOccured
+  where rebind eventListener =
+          traverse_ (\node ->
+                       do Just nodeList <-
+                            querySelectorAll (castToElement (id node))
+                                             selector
+                          mnode <-
+                            item nodeList 0 -- TODO Consider all results
+                          case mnode of
+                            Nothing -> return ()
+                            Just target ->
+                              addEventListener (castToElement target)
+                                               eventName
+                                               (Just eventListener)
+                                               False)
 onInput
-  :: Html -> String -> MomentIO (Event String)
+  :: Reactive
+  => ReactiveNodes -> String -> MomentIO (Event String)
 onInput view selector =
   do input <- on "input" view selector
      execute (fmap (\ev ->
@@ -589,42 +620,64 @@ onInput view selector =
                                       (getValue (castToHTMLInputElement target))))
                    input)
 
-onClick :: Html -> String -> MomentIO (Event ())
+onClick
+  :: Reactive
+  => ReactiveNodes -> String -> MomentIO (Event ())
 onClick view selector = fmap void (on "click" view selector)
 
 --------------------------------------------------------------------------------
-newtype Html =
-  Html (Behavior (Vector EqNode))
+type Reactive = (?animationFrame :: Event (), ?rebindEventHandlers :: Event ())
 
-instance Monoid Html where
-  mempty = Html (pure mempty)
-  Html l `mappend` Html r = Html (liftA2 mappend l r)
+render :: ReactiveHtml a -> MomentIO ReactiveNodes
+render (ReactiveHtml mk) = execWriterT mk
 
-render :: ReactiveHtml a -> MomentIO Html
-render (ReactiveHtml mk) = fmap (Html . snd) mk
-
-joinHtml :: Behavior (ReactiveHtml a) -> ReactiveHtml ()
+joinHtml :: Reactive => Behavior (ReactiveHtml a) -> ReactiveHtml ()
 joinHtml bhtml =
   ReactiveHtml $
-  do (sample,handle) <- newEvent
-     bChanged <- changes bhtml
-     reactimate' (fmap (fmap handle) bChanged)
-     laterNodes <- execute (fmap (\(ReactiveHtml m) -> m) sample)
-     initialHtml <- valueB bhtml >>= \(ReactiveHtml m) -> fmap snd m
-     nodes <- switchB initialHtml (fmap snd laterNodes)
-     return ((),nodes)
+  do (sample,handle) <- lift newEvent
+     bChanged <- lift (changes bhtml)
+     lift (reactimate' (fmap (fmap handle) bChanged))
+     laterNodes <-
+       lift (execute (fmap (\(ReactiveHtml m) -> execWriterT m) sample))
+     ReactiveNodes initialHtml mutated <-
+       lift (valueB bhtml) >>=
+       \(ReactiveHtml w) -> lift (execWriterT w)
+     nodes <-
+       lift (switchB initialHtml (fmap rnNodes laterNodes))
+     raf <-
+       lift (switchE (fmap rnStale laterNodes))
+     tell (ReactiveNodes nodes
+                         (unionWith const mutated raf))
 
-html :: Html -> ReactiveHtml ()
-html (Html b) = ReactiveHtml (return ((),b))
+html :: ReactiveNodes -> ReactiveHtml ()
+html = ReactiveHtml . tell
 
 --------------------------------------------------------------------------------
-runHtml :: MomentIO Html -> IO ()
+runHtml
+  :: (Reactive => MomentIO ReactiveNodes) -> IO ()
 runHtml app =
-  do Just document <- currentDocument
-     Just body <- getBody document
-     n <-
-       compile (do Html nodes <- app
-                   initialNodes <- valueB nodes
-                   nodesChanged <- changes nodes
-                   liftIO (traverse_ (appendChild body . Just . id) initialNodes))
-     actuate n
+  do (rafAH,animationFrameArrived) <- newAddHandler
+     (rafPostAH,animationFrameDone) <- newAddHandler
+     let dispatch = do _ <- waitForAnimationFrame
+                       animationFrameArrived ()
+                       animationFrameDone ()
+     network <-
+       compile (do animationFrame <- fromAddHandler rafAH
+                   animationFrameComplete <- fromAddHandler rafPostAH
+                   ReactiveNodes nodes raf <-
+                     let ?animationFrame = animationFrame
+                         ?rebindEventHandlers = animationFrameComplete
+                     in app
+                   currentNodes <-
+                     stepper mempty (nodes <@ animationFrame)
+                   reactimate
+                     (fmap sink
+                           (filterApply ((/=) <$> currentNodes)
+                                        (nodes <@ animationFrame)))
+                   reactimate (dispatch <$ raf))
+     actuate network
+     dispatch
+  where sink nodes =
+          do Just document <- currentDocument
+             Just body <- getBody document
+             traverse_ (appendChild body . Just) nodes
